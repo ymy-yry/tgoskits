@@ -229,6 +229,26 @@ struct StreamControl {
     max_payload_transfer_size: u32, // dwMaxPayloadTransferSize
 }
 
+pub(crate) const fn iso_payload_bytes(w_max_packet_size: u16) -> usize {
+    let bytes_per_transaction = (w_max_packet_size & 0x07ff) as usize;
+    let transactions_per_microframe = ((w_max_packet_size >> 11) & 0x03) as usize + 1;
+    bytes_per_transaction * transactions_per_microframe
+}
+
+fn minimum_sufficient_alt(
+    candidates: &[(usize, u16)],
+    required_payload: usize,
+) -> Option<(usize, usize)> {
+    if required_payload == 0 {
+        return None;
+    }
+    candidates
+        .iter()
+        .map(|(alt_index, w_max_packet_size)| (*alt_index, iso_payload_bytes(*w_max_packet_size)))
+        .filter(|(_, payload)| *payload >= required_payload)
+        .min_by_key(|(_, payload)| *payload)
+}
+
 pub struct UvcDevice {
     device: Device,
     _video_control_session: InterfaceSession,
@@ -237,6 +257,7 @@ pub struct UvcDevice {
     video_streaming_interface_num: u8,
     processing_unit_id: Option<u8>, // 处理单元ID
     current_format: Option<VideoFormat>,
+    negotiated_stream_control: Option<StreamControl>,
     state: UvcDeviceState,
     descriptor_parser: DescriptorParser, // 新增描述符解析器
 }
@@ -329,6 +350,7 @@ impl UvcDevice {
             processing_unit_id: Some(1), // 通常处理单元ID为1，实际应用中应该解析描述符
             // ep_in,
             current_format: None,
+            negotiated_stream_control: None,
             state: UvcDeviceState::Configured,
             descriptor_parser: DescriptorParser::new(),
         })
@@ -803,6 +825,7 @@ impl UvcDevice {
             .await?;
 
         debug!("Video format set successfully");
+        self.negotiated_stream_control = Some(stream_ctrl);
         self.current_format = Some(format);
         Ok(())
     }
@@ -811,10 +834,13 @@ impl UvcDevice {
     pub async fn start_streaming(&mut self) -> Result<VideoStream, USBError> {
         let vs_interface_num = self.video_streaming_interface_num;
 
-        let current_format = self
-            .current_format
-            .clone()
+        self.current_format
+            .as_ref()
             .ok_or(anyhow!("No format selected"))?;
+        let negotiated_stream_control = self
+            .negotiated_stream_control
+            .as_ref()
+            .ok_or(anyhow!("No negotiated stream control"))?;
 
         // 参考 libuvc 的实现，根据 dwMaxPayloadTransferSize 选择合适的 alternate setting
         let config = &self.device.configurations()[0];
@@ -824,41 +850,30 @@ impl UvcDevice {
             .find(|iface| iface.first_alt_setting().interface_number == vs_interface_num)
             .ok_or(USBError::NotFound)?;
 
-        let max_payload_size = current_format.frame_bytes();
+        let max_payload_size = negotiated_stream_control.max_payload_transfer_size as usize;
 
         debug!("Looking for alternate setting with payload size >= {max_payload_size}");
 
-        // 查找能够满足带宽要求的 alternate setting
-        let mut best_alt_setting = None;
-        let mut best_endpoint_size = 0;
-
-        for alt_setting in vs_interface_group.alt_settings.iter() {
+        let mut candidates = Vec::new();
+        for (alt_index, alt_setting) in vs_interface_group.alt_settings.iter().enumerate() {
             for endpoint in &alt_setting.endpoints {
                 if matches!(endpoint.transfer_type, EndpointType::Isochronous)
                     && matches!(endpoint.direction, Direction::In)
                 {
-                    let packet_size = endpoint.max_packet_size as usize;
+                    let packet_size = iso_payload_bytes(endpoint.max_packet_size);
                     debug!(
                         "Alt setting {}: endpoint size = {}",
                         alt_setting.alternate_setting, packet_size
                     );
-
-                    // 选择适中的端点大小以获得稳定的带宽
-                    // 避免选择太小（<256）或太大（>1024）的端点
-                    if (256..=1024).contains(&packet_size) && packet_size > best_endpoint_size {
-                        best_alt_setting = Some(alt_setting.clone());
-                        best_endpoint_size = packet_size;
-                    } else if best_alt_setting.is_none() && packet_size > best_endpoint_size {
-                        // 如果没有找到理想范围内的，选择最大的
-                        best_alt_setting = Some(alt_setting.clone());
-                        best_endpoint_size = packet_size;
-                    }
+                    candidates.push((alt_index, endpoint.max_packet_size));
                 }
             }
         }
-
-        let alt_setting =
-            best_alt_setting.unwrap_or(vs_interface_group.alt_settings.first().cloned().unwrap()); // 默认为 alt setting 1
+        let (alt_index, best_endpoint_size) = minimum_sufficient_alt(&candidates, max_payload_size)
+            .ok_or(anyhow!(
+                "No ISO IN alternate setting satisfies negotiated payload"
+            ))?;
+        let alt_setting = vs_interface_group.alt_settings[alt_index].clone();
 
         debug!(
             "Selected alternate setting {} with endpoint size {best_endpoint_size}",
@@ -1288,5 +1303,34 @@ impl UvcDevice {
         let error_code = response.first().copied().unwrap_or(0);
         debug!("Stream error code: 0x{:02x}", error_code);
         Ok(error_code)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{iso_payload_bytes, minimum_sufficient_alt};
+
+    #[test]
+    fn selects_minimum_alt_that_satisfies_negotiated_payload() {
+        let candidates = [(0, 0), (1, 256), (2, 512), (3, 1024), (4, 0x0c00)];
+
+        assert_eq!(minimum_sufficient_alt(&candidates, 500), Some((2, 512)));
+        assert_eq!(minimum_sufficient_alt(&candidates, 700), Some((3, 1024)));
+        assert_eq!(minimum_sufficient_alt(&candidates, 1200), Some((4, 2048)));
+    }
+
+    #[test]
+    fn rejects_zero_or_unsatisfied_negotiated_payload() {
+        let candidates = [(1, 256), (2, 512)];
+
+        assert_eq!(minimum_sufficient_alt(&candidates, 0), None);
+        assert_eq!(minimum_sufficient_alt(&candidates, 513), None);
+    }
+
+    #[test]
+    fn decodes_high_bandwidth_iso_payload_from_wmax_packet_size() {
+        assert_eq!(iso_payload_bytes(1024), 1024);
+        assert_eq!(iso_payload_bytes(0x0c00), 2048);
+        assert_eq!(iso_payload_bytes(0x1400), 3072);
     }
 }
