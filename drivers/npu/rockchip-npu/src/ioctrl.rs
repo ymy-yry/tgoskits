@@ -15,6 +15,25 @@ const RKNN_NPU_CORE_ALL: u32 = 0xffff;
 const RKNPU_SYNC_POLL_LOG_INTERVAL: u64 = 1_000_000;
 static LOGGED_SUBMIT_CORE_LAYOUT: AtomicBool = AtomicBool::new(false);
 
+/// Hardware state captured when a submitted task reports an unexpected interrupt.
+///
+/// These values are intended for post-failure diagnostics. They deliberately do
+/// not expose mutable register access or alter the DMA/GEM ownership model.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RknpuPcFailureSnapshot {
+    pub core_idx: u32,
+    pub expected_interrupt_mask: u32,
+    pub observed_interrupt_status: u32,
+    pub interrupt_raw_status: u32,
+    pub interrupt_mask: u32,
+    pub base_address: u32,
+    pub register_amounts: u32,
+    pub task_control: u32,
+    pub task_dma_base_addr: u32,
+    pub task_status: u32,
+    pub operation_enable: u32,
+}
+
 /// 子核心任务索引结构体
 ///
 /// 对应 C 结构体 `rknpu_subcore_task`
@@ -181,6 +200,8 @@ fn subcore_task_index(use_core_num: usize, core_idx: usize) -> usize {
 
 impl Rknpu {
     pub fn submit_ioctrl(&mut self, args: &mut RknpuSubmit) -> Result<(), RknpuError> {
+        self.last_failure_snapshot = None;
+
         if args.flags & 1 << 1 > 0 {
             debug!("Nonblock task");
         }
@@ -388,6 +409,7 @@ impl Rknpu {
                     "rknpu submit: core {} unexpected interrupt status={:#x}, int_mask={:#x}",
                     state.core_idx, status, state.current_int_mask
                 );
+                self.capture_failure_snapshot(state.core_idx, state.current_int_mask, status);
                 return Err(RknpuError::TaskError);
             }
             return Ok(false);
@@ -413,5 +435,27 @@ impl Rknpu {
         }
 
         Ok(true)
+    }
+
+    fn capture_failure_snapshot(
+        &mut self,
+        core_idx: usize,
+        expected_interrupt_mask: u32,
+        observed_interrupt_status: u32,
+    ) {
+        let pc = self.base[core_idx].pc();
+        self.last_failure_snapshot = Some(RknpuPcFailureSnapshot {
+            core_idx: core_idx as u32,
+            expected_interrupt_mask,
+            observed_interrupt_status,
+            interrupt_raw_status: pc.interrupt_raw_status.get(),
+            interrupt_mask: pc.interrupt_mask.get(),
+            base_address: pc.base_address.get(),
+            register_amounts: pc.register_amounts.get(),
+            task_control: pc.task_control.get(),
+            task_dma_base_addr: pc.task_dma_base_addr.get(),
+            task_status: pc.task_status.get(),
+            operation_enable: pc.operation_enable.get(),
+        });
     }
 }

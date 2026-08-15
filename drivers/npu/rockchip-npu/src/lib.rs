@@ -91,6 +91,7 @@ pub struct Rknpu {
     iommu_enabled: bool,
     pub(crate) gem: GemPool,
     pub(crate) auto_core_cursor: usize,
+    pub(crate) last_failure_snapshot: Option<ioctrl::RknpuPcFailureSnapshot>,
 }
 
 impl Rknpu {
@@ -115,11 +116,20 @@ impl Rknpu {
             iommu_enabled: false,
             gem: GemPool::new(dma),
             auto_core_cursor: 0,
+            last_failure_snapshot: None,
         }
     }
 
     pub fn dma(&self) -> &DeviceDma {
         &self.dma
+    }
+
+    /// Returns the register snapshot captured for the most recent failed submit.
+    ///
+    /// The snapshot is diagnostic state only. It does not synchronize, recover,
+    /// or otherwise change ownership of the DMA buffers used by the NPU.
+    pub fn last_failure_snapshot(&self) -> Option<ioctrl::RknpuPcFailureSnapshot> {
+        self.last_failure_snapshot
     }
 
     pub fn mem_sync(&mut self, args: &mut ioctrl::RknpuMemSync) -> Result<(), RknpuError> {
