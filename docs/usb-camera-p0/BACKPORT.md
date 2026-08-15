@@ -21,4 +21,3 @@
 | R0 | 待首次提交 | 本设计与本清单 | 未开始 |
 | R1 | 待实现 | `drivers/usb/usb-host/.../xhci/device.rs` | 等待主链导入 |
 | R2--R16 | 待实现 | UVC、usbfs、ax-driver 和测试 fixtures | 等待主链导入 |
-

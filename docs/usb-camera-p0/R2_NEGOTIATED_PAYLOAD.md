@@ -26,4 +26,3 @@ CARGO_NET_OFFLINE=true cargo clippy -p crab-uvc --lib --no-default-features -- -
 ```
 
 两项均通过。该证据是 host-side library 验证，不是 USB 实机、QEMU USB 或 RK3588 板端结果。
-

@@ -32,4 +32,3 @@ RK3588 上的 UVC 摄像头使用 HS/SS isochronous endpoint 时，xHCI endpoint
 ## 回移准备
 
 实现提交将保持为单一、可 cherry-pick 的 `crab-usb` 改动。回移到 `starryos-merged` 前，必须先导入与本提交一致的 TGOSKits USB 主链及其 Cargo 依赖闭包；不能仅复制此文件。回移清单见 [BACKPORT.md](BACKPORT.md)。
-
