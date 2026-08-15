@@ -3402,6 +3402,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "feetech-actuator"
+version = "0.5.14"
+
+[[package]]
 name = "ffmpeg-next"
 version = "7.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

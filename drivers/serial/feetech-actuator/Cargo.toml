@@ -1,0 +1,12 @@
+[package]
+name = "feetech-actuator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Feetech serial actuator protocol and omni-wheel kinematics"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
