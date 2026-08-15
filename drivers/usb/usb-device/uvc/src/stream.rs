@@ -7,6 +7,7 @@ use usb_if::{descriptor::EndpointDescriptor, endpoint::TransferRequest, err::USB
 use crate::{
     VideoFormat,
     frame::{FrameEvent, FrameParser},
+    iso_payload_bytes,
 };
 
 pub struct VideoStream {
@@ -22,13 +23,12 @@ unsafe impl Send for VideoStream {}
 
 impl VideoStream {
     pub fn new(ep: EndpointHandle, desc: EndpointDescriptor, vfmt: VideoFormat) -> Self {
-        let max_packet_size = desc.max_packet_size;
+        let max_packet_size = iso_payload_bytes(desc.max_packet_size);
         // 参考libusb计算逻辑:
         // packets_per_transfer = (dwMaxVideoFrameSize + endpoint_bytes_per_packet - 1) / endpoint_bytes_per_packet
         // 但保持合理的限制(最多32个包)
-        let packets_per_transfer =
-            core::cmp::min(vfmt.frame_bytes().div_ceil(max_packet_size as _), 32);
-        let buffer = vec![0u8; (max_packet_size as usize) * packets_per_transfer];
+        let packets_per_transfer = core::cmp::min(vfmt.frame_bytes().div_ceil(max_packet_size), 32);
+        let buffer = vec![0u8; max_packet_size * packets_per_transfer];
         debug!(
             "VideoStream created: max_packet_size={}, packets_per_transfer={}, buffer_size={}",
             max_packet_size,
@@ -42,7 +42,7 @@ impl VideoStream {
             vedio_format: vfmt,
             packets_per_transfer,
             buffer,
-            packet_size: max_packet_size as usize,
+            packet_size: max_packet_size,
         }
     }
 
@@ -50,17 +50,33 @@ impl VideoStream {
         self.buffer.fill(0);
 
         let packet_lengths = alloc::vec![self.packet_size; self.packets_per_transfer];
-        self.ep
+        let completion = self
+            .ep
             .wait(TransferRequest::iso_in(&mut self.buffer, &packet_lengths))
             .await?;
 
+        if completion.iso_packets.len() != self.packets_per_transfer {
+            return Err(
+                anyhow::anyhow!("ISO completion packet count does not match submission").into(),
+            );
+        }
+
         let mut events = Vec::new();
 
-        for data in self.buffer.chunks(self.packet_size) {
-            if data.iter().all(|&b| b == 0) {
-                // 空包，跳过
+        for (packet, result) in self
+            .buffer
+            .chunks(self.packet_size)
+            .zip(completion.iso_packets)
+        {
+            if result.actual_length > packet.len() {
+                return Err(
+                    anyhow::anyhow!("ISO completion actual_length exceeds packet buffer").into(),
+                );
+            }
+            if result.actual_length == 0 {
                 continue;
             }
+            let data = &packet[..result.actual_length];
             if let Ok(Some(one)) = self.frame_parser.push_packet(data) {
                 events.push(one);
             }

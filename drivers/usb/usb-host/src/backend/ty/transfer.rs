@@ -15,4 +15,6 @@ pub struct Transfer {
     pub buffer: Option<(std::ptr::NonNull<u8>, usize)>,
     pub transfer_len: usize,
     pub iso_packet_actual_lengths: Vec<usize>,
+    /// Backend-native ISO completion codes, aligned with packet lengths.
+    pub iso_packet_completion_codes: Vec<Option<u8>>,
 }

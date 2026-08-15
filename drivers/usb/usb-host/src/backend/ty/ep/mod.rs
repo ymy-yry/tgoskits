@@ -128,7 +128,12 @@ impl EndpointHandle {
         request: TransferRequest,
     ) -> Result<TransferCompletion, TransferError> {
         let id = self.submit(request)?;
-        EndpointRequestFuture { id, endpoint: self }.await
+        EndpointRequestFuture {
+            id,
+            endpoint: self,
+            completed: false,
+        }
+        .await
     }
 
     #[allow(unused)]
@@ -169,6 +174,7 @@ impl EndpointHandle {
 struct EndpointRequestFuture<'a> {
     id: RequestId,
     endpoint: &'a EndpointHandle,
+    completed: bool,
 }
 
 impl Future for EndpointRequestFuture<'_> {
@@ -176,7 +182,19 @@ impl Future for EndpointRequestFuture<'_> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        this.endpoint.poll_request(this.id, cx)
+        let result = this.endpoint.poll_request(this.id, cx);
+        if result.is_ready() {
+            this.completed = true;
+        }
+        result
+    }
+}
+
+impl Drop for EndpointRequestFuture<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            let _ = self.endpoint.cancel(self.id);
+        }
     }
 }
 
@@ -187,11 +205,15 @@ pub(crate) fn transfer_to_completion(id: RequestId, transfer: Transfer) -> Trans
             .iter()
             .copied()
             .zip(transfer.iso_packet_actual_lengths.iter().copied())
-            .map(|(requested_length, actual_length)| IsoPacketResult {
-                requested_length,
-                actual_length,
-                status: TransferStatus::Completed,
-            })
+            .zip(transfer.iso_packet_completion_codes.iter().copied())
+            .map(
+                |((requested_length, actual_length), completion_code)| IsoPacketResult {
+                    requested_length,
+                    actual_length,
+                    status: TransferStatus::Completed,
+                    completion_code,
+                },
+            )
             .collect(),
         _ => Vec::new(),
     };
@@ -201,5 +223,72 @@ pub(crate) fn transfer_to_completion(id: RequestId, transfer: Transfer) -> Trans
         status: TransferStatus::Completed,
         actual_length: transfer.transfer_len,
         iso_packets,
+    }
+}
+
+#[cfg(all(test, any(kmod, umod)))]
+mod tests {
+    use alloc::boxed::Box;
+    use core::{
+        pin::Pin,
+        task::{Context, Poll, Waker},
+    };
+
+    use usb_if::{
+        endpoint::{EndpointAddress, EndpointInfo, RequestId, TransferRequest},
+        transfer::Direction,
+    };
+
+    use super::{EndpointHandle, EndpointOp, EndpointType, TransferCompletion, TransferError};
+
+    struct PendingEndpoint {
+        cancelled: bool,
+    }
+
+    impl EndpointOp for PendingEndpoint {
+        fn submit_request(
+            &mut self,
+            _request: TransferRequest,
+        ) -> Result<RequestId, TransferError> {
+            Ok(RequestId::new(7))
+        }
+
+        fn reclaim_request(
+            &mut self,
+            _id: RequestId,
+        ) -> Option<Result<TransferCompletion, TransferError>> {
+            None
+        }
+
+        fn register_waker(&self, _id: RequestId, _cx: &mut Context<'_>) {}
+
+        fn cancel_request(&mut self, id: RequestId) -> Result<(), TransferError> {
+            assert_eq!(id, RequestId::new(7));
+            self.cancelled = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn dropping_pending_wait_cancels_the_inflight_request() {
+        let info = EndpointInfo {
+            address: EndpointAddress::new(1),
+            transfer_type: EndpointType::Bulk,
+            direction: Direction::Out,
+            max_packet_size: 64,
+            packets_per_microframe: 1,
+            interval: 0,
+        };
+        let endpoint = EndpointHandle::new(info, PendingEndpoint { cancelled: false });
+        let mut future = Box::pin(endpoint.wait(TransferRequest::bulk_out(&[1, 2, 3])));
+        let mut context = Context::from_waker(Waker::noop());
+
+        assert!(matches!(
+            Pin::new(&mut future).poll(&mut context),
+            Poll::Pending
+        ));
+        drop(future);
+
+        assert!(endpoint.with_raw_mut::<PendingEndpoint, _>(|raw| raw.cancelled));
     }
 }

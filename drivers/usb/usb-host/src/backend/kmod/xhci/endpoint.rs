@@ -317,6 +317,7 @@ impl Endpoint {
             }
 
             let mut actual_lengths = Vec::with_capacity(packets.len());
+            let mut completion_codes = Vec::with_capacity(packets.len());
             for (index, packet) in packets.iter().copied().enumerate() {
                 let requested = packet_lengths[index];
                 let actual = match packet.actual {
@@ -325,10 +326,17 @@ impl Endpoint {
                     None => 0,
                 };
                 actual_lengths.push(actual);
+                completion_codes.push(
+                    packet
+                        .event
+                        .or((packet.trb == event_trb).then_some(event))
+                        .and_then(iso_packet_completion_code),
+                );
             }
 
             let transfer_len = actual_lengths.iter().sum();
             transfer.iso_packet_actual_lengths = actual_lengths;
+            transfer.iso_packet_completion_codes = completion_codes;
             if transfer_len > 0 && matches!(transfer.direction, Direction::In) {
                 transfer.complete_for_cpu_all();
             }
@@ -1005,6 +1013,10 @@ fn iso_packet_actual_length(
             "unknown XHCI ISO completion code: {e:?}"
         ))),
     }
+}
+
+fn iso_packet_completion_code(event: TransferEvent) -> Option<u8> {
+    event.completion_code().ok().map(|code| code as u8)
 }
 
 fn iso_packet_is_fatal(event: TransferEvent) -> bool {

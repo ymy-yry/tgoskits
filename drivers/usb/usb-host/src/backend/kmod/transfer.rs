@@ -38,6 +38,7 @@ impl Transfer {
             mapping,
             transfer_len: 0,
             iso_packet_actual_lengths: Vec::new(),
+            iso_packet_completion_codes: Vec::new(),
         })
     }
 

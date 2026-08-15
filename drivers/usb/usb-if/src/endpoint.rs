@@ -317,6 +317,12 @@ pub struct IsoPacketResult {
     pub requested_length: usize,
     pub actual_length: usize,
     pub status: TransferStatus,
+    /// Backend-native completion code, when the controller reports one.
+    ///
+    /// For xHCI this is the raw 8-bit TRB Completion Code. `status` remains a
+    /// portable classification; it does not carry enough information to
+    /// distinguish ISO outcomes such as short packets and missed service.
+    pub completion_code: Option<u8>,
 }
 
 #[derive(Clone, Debug)]

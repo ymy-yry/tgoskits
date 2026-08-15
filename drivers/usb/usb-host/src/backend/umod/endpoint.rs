@@ -200,6 +200,7 @@ impl EndpointOp for EndpointImpl {
             buffer: buffer.map(|buffer| (buffer.ptr, buffer.len)),
             transfer_len: 0,
             iso_packet_actual_lengths: Vec::new(),
+            iso_packet_completion_codes: Vec::new(),
         };
         let trans = self.make_transfer(transfer)?;
         let id = trans.id();

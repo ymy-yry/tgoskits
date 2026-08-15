@@ -13,8 +13,19 @@ log = "0.4"
 usb-if = {workspace = true}
 anyhow = { workspace = true }
 
-[target.'cfg(not(target_os = "none"))'.dev-dependencies]
-env_logger = "0.11"
-ffmpeg-next = "7.1.0"
-image = "0.24"
-tokio = {version = "1", features = ["full"]}
+[features]
+host-examples = ["dep:env_logger", "dep:ffmpeg-next", "dep:image", "dep:tokio"]
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+env_logger = { version = "0.11", optional = true }
+ffmpeg-next = { version = "7.1.0", optional = true }
+image = { version = "0.24", optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+
+[[example]]
+name = "capture_video"
+required-features = ["host-examples"]
+
+[[example]]
+name = "simple_streaming_test"
+required-features = ["host-examples"]
